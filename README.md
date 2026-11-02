@@ -2,6 +2,12 @@
 
 Python samples for [G Suite API](https://developers.google.com/gsuite/) docs.
 
+## Учёт рабочего времени (тестовое задание)
+
+Небольшое веб-приложение на Flask + SQLite: сотрудники, таймер задач, отчёт за период.
+Код, тесты и подробное описание (запуск, использованные ИИ-инструменты, найденные ошибки) —
+в каталоге [`time_tracker/`](time_tracker/README.md).
+
 ## APIs
 
 ### Admin SDK

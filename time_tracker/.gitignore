@@ -1,0 +1,8 @@
+# локальная база данных и виртуальное окружение
+instance/
+*.sqlite3
+*.sqlite3-journal
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

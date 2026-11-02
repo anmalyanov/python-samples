@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <h2>Добавить сотрудника</h2>
+  <form method="post" action="{{ url_for('tracker.add_employee') }}" class="inline-form">
+    <label for="name" class="visually-hidden">Имя сотрудника</label>
+    <input id="name" name="name" type="text" placeholder="Имя сотрудника"
+           value="{{ form_values.get('name', '') }}"
+           maxlength="100" required autocomplete="off">
+    <button type="submit">Добавить</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Сотрудники</h2>
+  {% if not statuses %}
+    <p class="muted">Сотрудников пока нет. Добавьте первого через форму выше.</p>
+  {% else %}
+  <div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Сотрудник</th>
+        <th>Текущая задача</th>
+        <th>Таймер</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for status in statuses %}
+      {% set employee = status.employee %}
+      {% set running = status.running_entry %}
+      <tr>
+        <td class="name">{{ employee.name }}</td>
+        {% if running %}
+          <td>
+            <span class="badge badge-running">идёт</span>
+            «{{ running.description }}»
+            <div class="muted small">
+              с {{ running.started_at|local_dt }},
+              прошло <span class="elapsed"
+                           data-started-at="{{ running.started_at.isoformat() }}">{{ running.duration_seconds()|duration }}</span>
+            </div>
+          </td>
+          <td>
+            <form method="post"
+                  action="{{ url_for('tracker.stop_timer', employee_id=employee.id) }}">
+              <button type="submit" class="btn-stop">Стоп</button>
+            </form>
+          </td>
+        {% else %}
+          <td><span class="muted">таймер не запущен</span></td>
+          <td>
+            <form method="post" class="inline-form"
+                  action="{{ url_for('tracker.start_timer', employee_id=employee.id) }}">
+              <label for="description-{{ employee.id }}" class="visually-hidden">Описание задачи</label>
+              <input id="description-{{ employee.id }}" name="description" type="text"
+                     value="{{ form_values.get('description', '') if form_values.get('employee_id') == employee.id else '' }}"
+                     placeholder="Что делаем?" maxlength="200" required autocomplete="off">
+              <button type="submit" class="btn-start">Старт</button>
+            </form>
+          </td>
+        {% endif %}
+        <td>
+          <a href="{{ url_for('tracker.report', employee_id=employee.id) }}">Отчёт</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Обновляем «прошло …» у идущих таймеров раз в секунду без перезагрузки.
+  (function () {
+    function pad(n) { return String(n).padStart(2, "0"); }
+    function tick() {
+      document.querySelectorAll(".elapsed[data-started-at]").forEach(function (el) {
+        var started = Date.parse(el.dataset.startedAt);
+        if (isNaN(started)) { return; }
+        var total = Math.max(0, Math.floor((Date.now() - started) / 1000));
+        var h = Math.floor(total / 3600), m = Math.floor(total % 3600 / 60), s = total % 60;
+        el.textContent = h + ":" + pad(m) + ":" + pad(s);
+      });
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
+{% endblock %}

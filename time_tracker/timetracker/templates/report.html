@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}Отчёт — Учёт рабочего времени{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Отчёт по сотруднику</h2>
+  {% if not employees %}
+    <p class="muted">Сначала <a href="{{ url_for('tracker.index') }}">добавьте сотрудников</a>.</p>
+  {% else %}
+  <form method="get" action="{{ url_for('tracker.report') }}" class="report-form">
+    <label>
+      Сотрудник
+      <select name="employee_id" required>
+        <option value="" {% if not form.employee_id %}selected{% endif %}>— выберите —</option>
+        {% for employee in employees %}
+          <option value="{{ employee.id }}"
+                  {% if form.employee_id == employee.id|string %}selected{% endif %}>{{ employee.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      С
+      <input type="date" name="date_from" value="{{ form.date_from }}" required>
+    </label>
+    <label>
+      По
+      <input type="date" name="date_to" value="{{ form.date_to }}" required>
+    </label>
+    <button type="submit">Показать</button>
+  </form>
+  {% endif %}
+</section>
+
+{% if report %}
+<section class="card">
+  <h2>
+    {{ report.employee.name }}:
+    {{ report.date_from.strftime('%d.%m.%Y') }} — {{ report.date_to.strftime('%d.%m.%Y') }}
+  </h2>
+  <p class="total">Общее время: <strong>{{ report.total_seconds|duration }}</strong></p>
+
+  {% if report.is_empty %}
+    <p class="muted empty">Нет записей за выбранный период.</p>
+  {% else %}
+  <div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Начало</th>
+        <th>Окончание</th>
+        <th>Длительность</th>
+        <th>Задача</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in report.entries %}
+      <tr {% if entry.is_running %}class="running"{% endif %}>
+        <td>{{ entry.started_at|local_dt }}</td>
+        <td>
+          {% if entry.is_running %}
+            <span class="badge badge-running">идёт</span>
+          {% else %}
+            {{ entry.stopped_at|local_dt }}
+          {% endif %}
+        </td>
+        <td>
+          {% if entry.is_running %}
+            <span class="muted">{{ entry.duration_seconds()|duration }} (не учтено)</span>
+          {% else %}
+            {{ entry.duration_seconds()|duration }}
+          {% endif %}
+        </td>
+        <td>{{ entry.description }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">В общее время входят только завершённые записи.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

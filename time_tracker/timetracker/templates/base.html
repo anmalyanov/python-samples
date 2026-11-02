@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Учёт рабочего времени{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('tracker.index') }}">⏱ Учёт рабочего времени</a>
+    <nav>
+      <a href="{{ url_for('tracker.index') }}"
+         {% if request.endpoint == 'tracker.index' %}class="active"{% endif %}>Сотрудники и таймеры</a>
+      <a href="{{ url_for('tracker.report') }}"
+         {% if request.endpoint == 'tracker.report' %}class="active"{% endif %}>Отчёт</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="notice notice-{{ category }}" role="status">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% if error %}
+      <div class="notice notice-error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    Все данные вымышленные. Время отображается в поясе {{ config.TIMEZONE }}.
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
