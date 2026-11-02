@@ -1,83 +1,131 @@
 {% extends "base.html" %}
 
-{% block title %}Отчёт — Учёт рабочего времени{% endblock %}
+{% block title %}Отчёт — Табель{% endblock %}
 
 {% block content %}
-<section class="card">
-  <h2>Отчёт по сотруднику</h2>
+<section class="sheet">
+  <header class="sheet-head">
+    <h1>Отчёт</h1>
+    {% if employees %}
+    <form method="get" action="{{ url_for('tracker.report') }}" class="row-form report-form">
+      <label>
+        <span class="label">Сотрудник</span>
+        <select name="employee_id" required>
+          <option value="" {% if not form.employee_id %}selected{% endif %}>— выберите —</option>
+          {% for employee in employees %}
+            <option value="{{ employee.id }}"
+                    {% if form.employee_id == employee.id|string %}selected{% endif %}>{{ employee.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="label">С</span>
+        <input type="date" name="date_from" value="{{ form.date_from }}" required>
+      </label>
+      <label>
+        <span class="label">По</span>
+        <input type="date" name="date_to" value="{{ form.date_to }}" required>
+      </label>
+      <button type="submit" class="btn">Показать</button>
+    </form>
+    {% endif %}
+  </header>
+
   {% if not employees %}
-    <p class="muted">Сначала <a href="{{ url_for('tracker.index') }}">добавьте сотрудников</a>.</p>
-  {% else %}
-  <form method="get" action="{{ url_for('tracker.report') }}" class="report-form">
-    <label>
-      Сотрудник
-      <select name="employee_id" required>
-        <option value="" {% if not form.employee_id %}selected{% endif %}>— выберите —</option>
-        {% for employee in employees %}
-          <option value="{{ employee.id }}"
-                  {% if form.employee_id == employee.id|string %}selected{% endif %}>{{ employee.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>
-      С
-      <input type="date" name="date_from" value="{{ form.date_from }}" required>
-    </label>
-    <label>
-      По
-      <input type="date" name="date_to" value="{{ form.date_to }}" required>
-    </label>
-    <button type="submit">Показать</button>
-  </form>
+    <div class="empty">
+      <p>Сначала <a href="{{ url_for('tracker.index') }}">добавьте сотрудников</a> — тогда будет что считать.</p>
+    </div>
   {% endif %}
 </section>
 
 {% if report %}
-<section class="card">
-  <h2>
-    {{ report.employee.name }}:
-    {{ report.date_from.strftime('%d.%m.%Y') }} — {{ report.date_to.strftime('%d.%m.%Y') }}
-  </h2>
-  <p class="total">Общее время: <strong>{{ report.total_seconds|duration }}</strong></p>
+<section class="sheet report">
+  <header class="report-head">
+    <div>
+      <h2 class="report-name">{{ report.employee.name }}</h2>
+      <p class="report-period">{{ period_label }}</p>
+    </div>
+    <div class="report-total">
+      <span class="label">Итого</span>
+      <span class="mono big">{{ report.total_seconds|duration }}</span>
+    </div>
+    {% if not report.is_empty %}
+      <a class="link csv" href="{{ url_for('tracker.report_csv', employee_id=report.employee.id,
+                                          date_from=report.date_from.isoformat(),
+                                          date_to=report.date_to.isoformat()) }}">скачать CSV</a>
+    {% endif %}
+  </header>
 
   {% if report.is_empty %}
-    <p class="muted empty">Нет записей за выбранный период.</p>
+    <div class="empty">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="34" r="20" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M32 20v14h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M26 8h12M32 8v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <p class="empty-title">Нет записей за выбранный период.</p>
+      <p>Попробуйте расширить даты или выбрать другого сотрудника.</p>
+    </div>
   {% else %}
-  <div class="table-wrap">
-  <table class="table">
-    <thead>
-      <tr>
-        <th>Начало</th>
-        <th>Окончание</th>
-        <th>Длительность</th>
-        <th>Задача</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for entry in report.entries %}
-      <tr {% if entry.is_running %}class="running"{% endif %}>
-        <td>{{ entry.started_at|local_dt }}</td>
-        <td>
-          {% if entry.is_running %}
-            <span class="badge badge-running">идёт</span>
-          {% else %}
-            {{ entry.stopped_at|local_dt }}
-          {% endif %}
-        </td>
-        <td>
-          {% if entry.is_running %}
-            <span class="muted">{{ entry.duration_seconds()|duration }} (не учтено)</span>
-          {% else %}
-            {{ entry.duration_seconds()|duration }}
-          {% endif %}
-        </td>
-        <td>{{ entry.description }}</td>
-      </tr>
+
+    {% if days %}
+    <div class="timeline" aria-label="Шкала по дням">
+      <div class="day scale" aria-hidden="true">
+        <div class="day-label"></div>
+        <div class="track-scale">
+          <span style="left:0">0</span><span style="left:25%">6</span><span style="left:50%">12</span>
+          <span style="left:75%">18</span><span style="left:100%">24</span>
+        </div>
+        <div class="day-total"></div>
+      </div>
+      {% for day in days %}
+      <div class="day {{ 'weekend' if day.is_weekend }} {{ 'empty-day' if day.is_empty }}">
+        <div class="day-label">
+          <span class="dow">{{ day.day|weekday_ru }}</span>
+          <span class="mono">{{ day.day.strftime('%d.%m') }}</span>
+        </div>
+        <div class="track">
+          {% for seg in day.segments %}
+          <span class="seg {{ 'running' if seg.entry.is_running }} {{ 'continues' if seg.continues_next_day }}"
+                style="left:{{ '%.3f' % (seg.start * 100) }}%;width:{{ '%.3f' % ((seg.end - seg.start) * 100) }}%"
+                title="{{ seg.entry.started_at|local_dt('%H:%M') }}–{{ seg.entry.stopped_at|local_dt('%H:%M') if seg.entry.stopped_at else '…' }} · {{ seg.entry.description }} · {{ seg.entry.duration_seconds()|duration }}"></span>
+          {% endfor %}
+        </div>
+        <div class="day-total mono">{{ day.total_seconds|duration if not day.is_empty else '' }}</div>
+      </div>
       {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="muted small">В общее время входят только завершённые записи.</p>
+    </div>
+    {% elif timeline_skipped %}
+      <p class="hint">Шкала по дням показывается для периодов до {{ 31 }} дней.</p>
+    {% endif %}
+
+    <div class="table-wrap">
+    <table class="ledger entries">
+      <thead>
+        <tr>
+          <th>Начало</th>
+          <th>Окончание</th>
+          <th class="time">Длительность</th>
+          <th>Задача</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in report.entries %}
+        <tr class="{{ 'is-running' if entry.is_running }}">
+          <td class="mono" data-label="Начало">{{ entry.started_at|local_dt }}</td>
+          <td class="mono" data-label="Окончание">
+            {% if entry.is_running %}<span class="stamp stamp-go">идёт</span>{% else %}{{ entry.stopped_at|local_dt }}{% endif %}
+          </td>
+          <td class="time mono" data-label="Длительность">
+            {{ entry.duration_seconds()|duration }}{% if entry.is_running %} <span class="muted">(не учтено)</span>{% endif %}
+          </td>
+          <td class="name" data-label="Задача">{{ entry.description }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="hint">Запись относится к дню, в который она начата; идущий таймер в итог не входит.</p>
   {% endif %}
 </section>
 {% endif %}

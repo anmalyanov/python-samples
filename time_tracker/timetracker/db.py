@@ -40,6 +40,12 @@ CREATE INDEX IF NOT EXISTS time_entries_by_employee_and_start
 """
 
 
+def default_db_path() -> str:
+    """``time_tracker/instance/timetracker.sqlite3`` — общий для веб-приложения и CLI."""
+    package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(package_parent, "instance", "timetracker.sqlite3")
+
+
 def connect(path: str | os.PathLike[str]) -> sqlite3.Connection:
     """Открыть соединение с нужными настройками (используется и в тестах)."""
     conn = sqlite3.connect(os.fspath(path))

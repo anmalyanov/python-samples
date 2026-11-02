@@ -11,13 +11,17 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 MAX_NAME_LENGTH = 100
 MAX_DESCRIPTION_LENGTH = 200
 MAX_SQLITE_INT = 2**63 - 1  # больше этого SQLite в INTEGER не хранит
+LONG_RUNNING_HOURS = 12  # дольше — скорее всего, таймер забыли остановить
 
 
 # --- ошибки -----------------------------------------------------------------
@@ -105,6 +109,10 @@ class TimeEntry:
         end = self.stopped_at if self.stopped_at is not None else normalize(now or utcnow())
         return max(0, int((end - self.started_at).total_seconds()))
 
+    def is_suspiciously_long(self, now: datetime | None = None) -> bool:
+        """Идёт дольше LONG_RUNNING_HOURS — вероятно, забыли остановить."""
+        return self.is_running and self.duration_seconds(now) > LONG_RUNNING_HOURS * 3600
+
 
 @dataclass(frozen=True)
 class EmployeeStatus:
@@ -123,6 +131,31 @@ class Report:
     @property
     def is_empty(self) -> bool:
         return not self.entries
+
+
+@dataclass(frozen=True)
+class Segment:
+    """Отрезок записи на 24-часовой дорожке дня. ``start``/``end`` — доли суток 0..1."""
+
+    entry: TimeEntry
+    start: float
+    end: float
+    continues_next_day: bool  # запись закончилась (или идёт) уже после полуночи
+
+
+@dataclass(frozen=True)
+class DaySummary:
+    day: date
+    segments: list[Segment]
+    total_seconds: int  # только завершённые записи, начатые в этот день
+
+    @property
+    def is_weekend(self) -> bool:
+        return self.day.weekday() >= 5
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.segments
 
 
 # --- вспомогательное --------------------------------------------------------
@@ -173,6 +206,17 @@ def get_employee(conn: sqlite3.Connection, employee_id: int) -> Employee:
     row = conn.execute("SELECT id, name FROM employees WHERE id = ?", (employee_id,)).fetchone()
     if row is None:
         raise NotFoundError("Сотрудник не найден.")
+    return Employee(id=row["id"], name=row["name"])
+
+
+def find_employee(conn: sqlite3.Connection, name: str | None) -> Employee:
+    """Найти сотрудника по имени без учёта регистра и лишних пробелов."""
+    name = _clean_text(name, "Имя сотрудника", MAX_NAME_LENGTH)
+    row = conn.execute(
+        "SELECT id, name FROM employees WHERE name_key = ?", (name.casefold(),)
+    ).fetchone()
+    if row is None:
+        raise NotFoundError(f"Сотрудник «{name}» не найден.")
     return Employee(id=row["id"], name=row["name"])
 
 
@@ -319,3 +363,80 @@ def build_report(
         entries=entries,
         total_seconds=total,
     )
+
+
+# --- шкала дня --------------------------------------------------------------
+
+
+def _day_bounds(day: date, tz: tzinfo) -> tuple[float, float]:
+    """Границы календарного дня в секундах эпохи.
+
+    Считаем через ``timestamp()``, а не вычитанием datetime: у двух aware-дат
+    с одним и тем же tzinfo Python вычитает «настенное» время и игнорирует
+    смену смещения, поэтому день перевода часов получился бы ровно 24 часа.
+    """
+    start = datetime.combine(day, time.min, tzinfo=tz).timestamp()
+    end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=tz).timestamp()
+    return start, end
+
+
+def daily_breakdown(report: Report, tz: tzinfo, now: datetime | None = None) -> list[DaySummary]:
+    """Разложить записи отчёта по дням для 24-часовой шкалы.
+
+    Запись относится к дню, в который она начата — как в табеле ночная смена
+    записывается на дату выхода. Если она закончилась после полуночи, отрезок
+    рисуется до конца дня и помечается ``continues_next_day``. Поэтому сумма
+    итогов по дням всегда равна ``report.total_seconds``.
+    """
+    moment = normalize(now or utcnow())
+    by_day: dict[date, list[Segment]] = defaultdict(list)
+    for entry in report.entries:
+        day = entry.started_at.astimezone(tz).date()
+        day_start, day_end = _day_bounds(day, tz)
+        length = day_end - day_start
+        end_moment = entry.stopped_at if entry.stopped_at is not None else moment
+        start = (entry.started_at.timestamp() - day_start) / length
+        end = (end_moment.timestamp() - day_start) / length
+        by_day[day].append(
+            Segment(
+                entry=entry,
+                start=min(max(start, 0.0), 1.0),
+                end=min(max(end, start, 0.0), 1.0),
+                continues_next_day=end > 1.0,
+            )
+        )
+
+    days = []
+    day = report.date_from
+    while day <= report.date_to:
+        segments = sorted(by_day.get(day, []), key=lambda s: (s.start, s.entry.id))
+        total = sum(s.entry.duration_seconds() for s in segments if not s.entry.is_running)
+        days.append(DaySummary(day=day, segments=segments, total_seconds=total))
+        day += timedelta(days=1)
+    return days
+
+
+# --- экспорт ----------------------------------------------------------------
+
+
+def report_to_csv(report: Report, tz: tzinfo) -> str:
+    """CSV с разделителем «;» — так файл открывается в русском Excel без мастера импорта."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
+    writer.writerow(["Сотрудник", "Начало", "Окончание", "Длительность", "Секунды", "Задача"])
+    for entry in report.entries:
+        started = entry.started_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+        stopped = (
+            entry.stopped_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+            if entry.stopped_at
+            else ""
+        )
+        seconds = entry.duration_seconds() if not entry.is_running else ""
+        duration = format_duration(seconds) if seconds != "" else "идёт"
+        writer.writerow(
+            [report.employee.name, started, stopped, duration, seconds, entry.description]
+        )
+    writer.writerow(
+        ["Итого", "", "", format_duration(report.total_seconds), report.total_seconds, ""]
+    )
+    return buffer.getvalue()

@@ -349,3 +349,88 @@ def test_report_with_dates_outside_representable_range(conn):
         services.build_report(conn, emp.id, date(1, 1, 1), date(1, 1, 2), MSK)
     with pytest.raises(ValidationError):
         services.build_report(conn, emp.id, date(9999, 12, 30), date(9999, 12, 31), MSK)
+
+
+# --- гонка, поиск по имени, долгие таймеры, CSV ------------------------------
+
+
+def test_concurrent_start_requests_create_single_entry(db_path, monkeypatch):
+    """Два «Старт» одновременно: оба прошли проверку в коде, но индекс пропустил одного."""
+    import threading
+
+    conn = db.connect(db_path)
+    db.init_db(conn)
+    emp = services.add_employee(conn, "Алиса")
+    conn.close()
+
+    barrier = threading.Barrier(2)
+    original = services.get_running_entry
+
+    def get_running_entry_then_wait(connection, employee_id):
+        result = original(connection, employee_id)
+        barrier.wait(timeout=5)  # оба потока увидели «таймер не идёт» — и только потом пишут
+        return result
+
+    monkeypatch.setattr(services, "get_running_entry", get_running_entry_then_wait)
+
+    outcomes: list[str] = []
+
+    def worker(label: str) -> None:
+        connection = db.connect(db_path)
+        try:
+            services.start_timer(connection, emp.id, f"Задача {label}")
+            outcomes.append("ok")
+        except TimerAlreadyRunningError:
+            outcomes.append("rejected")
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=worker, args=(label,)) for label in "AB"]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(outcomes) == ["ok", "rejected"]
+    conn = db.connect(db_path)
+    try:
+        assert len(running_entries(conn, emp.id)) == 1
+    finally:
+        conn.close()
+
+
+def test_find_employee_ignores_case_and_spaces(conn):
+    emp = services.add_employee(conn, "Алиса Примерова")
+    assert services.find_employee(conn, "  алиса   ПРИМЕРОВА ") == emp
+    with pytest.raises(NotFoundError):
+        services.find_employee(conn, "Алиса")
+    with pytest.raises(ValidationError):
+        services.find_employee(conn, "   ")
+
+
+def test_suspiciously_long_timer(conn):
+    emp = services.add_employee(conn, "Алиса")
+    entry = services.start_timer(conn, emp.id, "Задача", now=T0)
+    assert not entry.is_suspiciously_long(now=T0 + timedelta(hours=12))
+    assert entry.is_suspiciously_long(now=T0 + timedelta(hours=12, seconds=1))
+    stopped = services.stop_timer(conn, emp.id, now=T0 + timedelta(hours=20))
+    assert not stopped.is_suspiciously_long()  # завершённые записи не предупреждают
+
+
+def test_report_to_csv(conn):
+    emp = services.add_employee(conn, "Алиса")
+    services.start_timer(
+        conn, emp.id, "Макет; с точкой с запятой", now=datetime(2026, 3, 10, 9, 0, tzinfo=MSK)
+    )
+    services.stop_timer(conn, emp.id, now=datetime(2026, 3, 10, 10, 30, tzinfo=MSK))
+    services.start_timer(conn, emp.id, "Идёт", now=datetime(2026, 3, 10, 11, 0, tzinfo=MSK))
+    report = services.build_report(conn, emp.id, date(2026, 3, 10), date(2026, 3, 10), MSK)
+
+    lines = services.report_to_csv(report, MSK).split("\r\n")
+    assert lines[0] == "Сотрудник;Начало;Окончание;Длительность;Секунды;Задача"
+    assert (
+        lines[1]
+        == 'Алиса;2026-03-10 09:00:00;2026-03-10 10:30:00;1:30:00;5400;"Макет; с точкой с запятой"'
+    )
+    assert lines[2] == "Алиса;2026-03-10 11:00:00;;идёт;;Идёт"
+    assert lines[3] == "Итого;;;1:30:00;5400;"

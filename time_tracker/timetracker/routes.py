@@ -1,26 +1,49 @@
-"""HTTP-слой: маршруты и шаблоны. Вся логика — в ``services``."""
+"""HTTP-слой: маршруты, фильтры и контекст шаблонов. Вся логика — в ``services``."""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from . import services
 from .db import get_db
-from .services import TimeTrackerError, ValidationError
+from .services import Report, TimeTrackerError, ValidationError
 
 bp = Blueprint("tracker", __name__)
 
 REPORT_DEFAULT_DAYS = 7  # период отчёта по умолчанию: последняя неделя
+MAX_TIMELINE_DAYS = 31  # дольше — шкала по дням не помещается, остаётся таблица
+
+MONTHS_GENITIVE = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]  # fmt: skip
+WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
 def app_tz() -> ZoneInfo:
     return ZoneInfo(current_app.config["TIMEZONE"])
 
 
-# --- фильтры для шаблонов ---------------------------------------------------
+# --- контекст и фильтры шаблонов --------------------------------------------
+
+
+@bp.app_context_processor
+def inject_clock() -> dict:
+    """Текущее время для живых часов в шапке и счётчиков идущих таймеров."""
+    now = services.utcnow()
+    return {"now_utc": now, "now_local": now.astimezone(app_tz())}
 
 
 @bp.app_template_filter("local_dt")
@@ -34,6 +57,28 @@ def local_dt(value: datetime | None, fmt: str = "%d.%m.%Y %H:%M:%S") -> str:
 @bp.app_template_filter("duration")
 def duration(seconds: int) -> str:
     return services.format_duration(seconds)
+
+
+@bp.app_template_filter("weekday_ru")
+def weekday_ru(value: date) -> str:
+    return WEEKDAYS_SHORT[value.weekday()]
+
+
+@bp.app_template_filter("date_ru")
+def date_ru(value: date, with_year: bool = True) -> str:
+    text = f"{value.day} {MONTHS_GENITIVE[value.month - 1]}"
+    return f"{text} {value.year}" if with_year else text
+
+
+def format_period(date_from: date, date_to: date) -> str:
+    """«10 марта 2026», «10–16 марта 2026», «27 октября – 2 ноября 2026»."""
+    if date_from == date_to:
+        return date_ru(date_from)
+    if (date_from.year, date_from.month) == (date_to.year, date_to.month):
+        return f"{date_from.day}–{date_to.day} {MONTHS_GENITIVE[date_to.month - 1]} {date_to.year}"
+    if date_from.year == date_to.year:
+        return f"{date_ru(date_from, with_year=False)} – {date_ru(date_to)}"
+    return f"{date_ru(date_from)} – {date_ru(date_to)}"
 
 
 # --- главная: сотрудники и таймеры ------------------------------------------
@@ -107,31 +152,67 @@ def _parse_date(value: str, field: str) -> date:
         raise ValidationError(f"{field}: укажите дату в формате ГГГГ-ММ-ДД.") from exc
 
 
+def _report_form(args) -> dict[str, str]:
+    """Параметры отчёта из query string с значениями по умолчанию (последняя неделя)."""
+    today = datetime.now(app_tz()).date()
+    default_from = today - timedelta(days=REPORT_DEFAULT_DAYS - 1)
+    return {
+        "employee_id": args.get("employee_id", ""),
+        "date_from": args.get("date_from", default_from.isoformat()),
+        "date_to": args.get("date_to", today.isoformat()),
+    }
+
+
+def _build_report(form: dict[str, str]) -> Report:
+    employee_id = _parse_int(form["employee_id"], "Сотрудник")
+    date_from = _parse_date(form["date_from"], "Начало периода")
+    date_to = _parse_date(form["date_to"], "Конец периода")
+    return services.build_report(get_db(), employee_id, date_from, date_to, app_tz())
+
+
 @bp.get("/report")
 def report():
-    conn = get_db()
-    employees = services.all_employees(conn)
-
-    today = datetime.now(app_tz()).date()
-    form = {
-        "employee_id": request.args.get("employee_id", ""),
-        "date_from": request.args.get(
-            "date_from", (today - timedelta(days=REPORT_DEFAULT_DAYS - 1)).isoformat()
-        ),
-        "date_to": request.args.get("date_to", today.isoformat()),
+    form = _report_form(request.args)
+    context = {
+        "employees": services.all_employees(get_db()),
+        "form": form,
+        "report": None,
+        "days": None,
+        "timeline_skipped": False,
+        "period_label": "",
+        "error": None,
     }
-    context = {"employees": employees, "form": form, "report": None, "error": None}
-
     if not form["employee_id"]:
         # Форма открыта впервые — просто показываем её.
         return render_template("report.html", **context)
 
     try:
-        employee_id = _parse_int(form["employee_id"], "Сотрудник")
-        date_from = _parse_date(form["date_from"], "Начало периода")
-        date_to = _parse_date(form["date_to"], "Конец периода")
-        context["report"] = services.build_report(conn, employee_id, date_from, date_to, app_tz())
+        rep = _build_report(form)
     except TimeTrackerError as exc:
         context["error"] = str(exc)
         return render_template("report.html", **context), exc.status_code
+
+    context["report"] = rep
+    context["period_label"] = format_period(rep.date_from, rep.date_to)
+    if (rep.date_to - rep.date_from).days < MAX_TIMELINE_DAYS:
+        context["days"] = services.daily_breakdown(rep, app_tz())
+    else:
+        context["timeline_skipped"] = True
     return render_template("report.html", **context)
+
+
+@bp.get("/report.csv")
+def report_csv():
+    try:
+        rep = _build_report(_report_form(request.args))
+    except TimeTrackerError as exc:
+        return str(exc), exc.status_code, {"Content-Type": "text/plain; charset=utf-8"}
+
+    # BOM нужен, чтобы Excel сразу понял кодировку UTF-8.
+    body = "﻿" + services.report_to_csv(rep, app_tz())
+    filename = f"report_{rep.employee.id}_{rep.date_from}_{rep.date_to}.csv"
+    return Response(
+        body,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

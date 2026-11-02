@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,13 +26,19 @@ def page(response):
     return response.get_data(as_text=True)
 
 
+def total(html):
+    """Итог отчёта из шапки страницы."""
+    match = re.search(r'class="mono big">([^<]+)<', html)
+    return match.group(1) if match else None
+
+
 # --- главная и сотрудники ---------------------------------------------------
 
 
 def test_index_without_employees(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Сотрудников пока нет" in page(response)
+    assert "Табель пока пуст" in page(response)
 
 
 def test_add_employee_redirects_and_shows_name(client):
@@ -42,7 +49,8 @@ def test_add_employee_redirects_and_shows_name(client):
     html = page(client.get("/"))
     assert "Сотрудник Алиса Примерова добавлен." in html
     assert "Алиса Примерова" in html
-    assert "таймер не запущен" in html
+    assert 'name="description"' in html  # форма запуска таймера
+    assert "Стоп" not in html
 
 
 def test_add_employee_with_empty_name_returns_400(client):
@@ -76,7 +84,8 @@ def test_start_and_stop_timer(client, app):
     assert response.status_code == 303
     html = page(client.get("/"))
     assert "Таймер остановлен: «Макет»" in html
-    assert "таймер не запущен" in html
+    assert "Стоп" not in html
+    assert 'name="description"' in html
 
 
 def test_start_timer_twice_returns_409_and_keeps_single_entry(client, app):
@@ -128,7 +137,7 @@ def test_report_form_without_parameters(client):
     assert response.status_code == 200
     html = page(response)
     assert "— выберите —" in html
-    assert "Общее время" not in html
+    assert "Итого" not in html
 
 
 def test_empty_report(client, app):
@@ -138,8 +147,9 @@ def test_empty_report(client, app):
     assert response.status_code == 200
     html = page(response)
     assert "Нет записей за выбранный период." in html
-    assert "<strong>0:00:00</strong>" in html
-    assert "10.03.2026 — 16.03.2026" in html
+    assert total(html) == "0:00:00"
+    assert "10–16 марта 2026" in html
+    assert "скачать CSV" not in html
 
 
 def test_report_with_entries_shows_rows_and_total(client, app):
@@ -160,7 +170,7 @@ def test_report_with_entries_shows_rows_and_total(client, app):
     response = client.get(f"/report?employee_id={emp_id}&date_from=2026-03-10&date_to=2026-03-10")
     assert response.status_code == 200
     html = page(response)
-    assert "<strong>2:15:00</strong>" in html
+    assert total(html) == "2:15:00"
     assert "Макет" in html and "Созвон" in html
     assert "Вне периода" not in html
     assert "10.03.2026 09:00:00" in html  # время показано в поясе приложения
@@ -176,7 +186,7 @@ def test_report_with_running_timer(client, app):
     html = page(client.get(f"/report?employee_id={emp_id}&date_from={today}&date_to={today}"))
     assert "Сейчас" in html
     assert "(не учтено)" in html
-    assert "<strong>0:00:00</strong>" in html
+    assert total(html) == "0:00:00"
 
 
 def test_report_with_invalid_date_returns_400(client, app):
@@ -215,7 +225,7 @@ def test_data_survive_app_restart(make_app):
     second = make_app()  # «перезапуск»
     html = page(second.test_client().get("/"))
     assert "Алиса" in html
-    assert "«Долгая задача»" in html
+    assert "Долгая задача" in html
     assert "Стоп" in html
 
 
@@ -264,3 +274,83 @@ def test_form_values_are_kept_after_error(client, app):
     )
     assert response.status_code == 400
     assert f'value="{long_description}"' in page(response)
+
+
+# --- шкала по дням, CSV, долгие таймеры, часы -------------------------------
+
+
+def add_entries(app, emp_id, items):
+    """items: (start, minutes|None) в UTC."""
+    conn = connect(app.config["DATABASE"])
+    try:
+        for start, minutes in items:
+            services.start_timer(conn, emp_id, f"Задача {start:%H:%M}", now=start)
+            if minutes is not None:
+                services.stop_timer(conn, emp_id, now=start + timedelta(minutes=minutes))
+    finally:
+        conn.close()
+
+
+def test_report_renders_day_timeline(client, app):
+    add_employee(client, "Алиса")
+    emp_id = employee_id(app, "Алиса")
+    t = datetime(2026, 3, 10, 6, 0, tzinfo=UTC)  # 09:00 по Москве
+    add_entries(app, emp_id, [(t, 180), (t + timedelta(days=1, hours=14), 120)])  # второе до 01:00
+
+    html = page(client.get(f"/report?employee_id={emp_id}&date_from=2026-03-09&date_to=2026-03-15"))
+    assert html.count('<div class="track">') == 7  # все дни недели, включая пустые
+    assert 'style="left:37.500%;width:12.500%"' in html  # 09:00–12:00
+    assert "continues" in html  # запись до 01:00 помечена стрелкой
+    assert "10–15 марта 2026" not in html and "9–15 марта 2026" in html
+    assert 'class="day weekend' in html
+    assert "скачать CSV" in html
+
+
+def test_timeline_is_skipped_for_long_periods(client, app):
+    add_employee(client, "Алиса")
+    emp_id = employee_id(app, "Алиса")
+    add_entries(app, emp_id, [(datetime(2026, 3, 10, 6, 0, tzinfo=UTC), 60)])
+
+    html = page(client.get(f"/report?employee_id={emp_id}&date_from=2026-01-01&date_to=2026-03-31"))
+    assert "Шкала по дням показывается для периодов до 31 дней." in html
+    assert 'class="day ' not in html
+    assert "1 января – 31 марта 2026" in html
+
+
+def test_report_csv_download(client, app):
+    add_employee(client, "Алиса")
+    emp_id = employee_id(app, "Алиса")
+    add_entries(app, emp_id, [(datetime(2026, 3, 10, 6, 0, tzinfo=UTC), 90)])
+
+    response = client.get(
+        f"/report.csv?employee_id={emp_id}&date_from=2026-03-10&date_to=2026-03-10"
+    )
+    assert response.status_code == 200
+    assert response.mimetype == "text/csv"
+    assert 'filename="report_' in response.headers["Content-Disposition"]
+    body = response.get_data(as_text=True)
+    assert body.startswith("﻿Сотрудник;")  # BOM для Excel
+    assert "Алиса;2026-03-10 09:00:00;2026-03-10 10:30:00;1:30:00;5400;Задача 06:00" in body
+    assert "Итого;;;1:30:00;5400;" in body
+
+
+def test_report_csv_errors_are_plain_text(client):
+    response = client.get("/report.csv?employee_id=999&date_from=2026-03-10&date_to=2026-03-10")
+    assert response.status_code == 404
+    assert response.mimetype == "text/plain"
+    assert "Сотрудник не найден." in page(response)
+
+
+def test_long_running_timer_shows_warning(client, app):
+    add_employee(client, "Алиса")
+    emp_id = employee_id(app, "Алиса")
+    add_entries(app, emp_id, [(services.utcnow() - timedelta(hours=13), None)])
+    html = page(client.get("/"))
+    assert "забыли остановить?" in html
+
+
+def test_header_has_live_clock_in_app_timezone(client):
+    html = page(client.get("/"))
+    assert 'id="live-clock"' in html
+    assert 'data-tz="Europe/Moscow"' in html
+    assert "data-server-now=" in html

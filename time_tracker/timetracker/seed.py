@@ -15,15 +15,15 @@ from .db import connect
 
 EMPLOYEES = ["Алиса Примерова", "Борис Тестов", "Виктория Демина"]
 
-# (сотрудник, часов назад от текущего момента — начало, минут длительности, задача)
+# (сотрудник, часов назад от текущего момента, минута начала, минут длительности, задача)
 ENTRIES = [
-    ("Алиса Примерова", 52, 95, "Макет главной страницы"),
-    ("Алиса Примерова", 48, 50, "Созвон с заказчиком"),
-    ("Алиса Примерова", 27, 120, "Вёрстка формы отчёта"),
-    ("Борис Тестов", 53, 180, "Настройка CI"),
-    ("Борис Тестов", 28, 45, "Код-ревью"),
-    ("Борис Тестов", 4, 90, "Исправление бага с датами"),
-    ("Виктория Демина", 26, 60, "Написание документации"),
+    ("Алиса Примерова", 52, 5, 95, "Макет главной страницы"),
+    ("Алиса Примерова", 48, 30, 50, "Созвон с заказчиком"),
+    ("Алиса Примерова", 27, 10, 120, "Вёрстка формы отчёта"),
+    ("Борис Тестов", 53, 0, 180, "Настройка CI"),
+    ("Борис Тестов", 28, 45, 45, "Код-ревью"),
+    ("Борис Тестов", 4, 20, 90, "Исправление бага с датами"),
+    ("Виктория Демина", 26, 0, 60, "Написание документации"),
 ]
 
 RUNNING = ("Виктория Демина", 17, "Подготовка демо")  # идёт уже 17 минут
@@ -36,10 +36,10 @@ def seed(db_path: str) -> bool:
         if conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]:
             return False
 
-        now = services.utcnow()
+        now = services.utcnow().replace(second=0)
         ids = {name: services.add_employee(conn, name).id for name in EMPLOYEES}
-        for name, hours_ago, minutes, task in ENTRIES:
-            started = now - timedelta(hours=hours_ago)
+        for name, hours_ago, start_minute, minutes, task in ENTRIES:
+            started = (now - timedelta(hours=hours_ago)).replace(minute=start_minute)
             services.start_timer(conn, ids[name], task, now=started)
             services.stop_timer(conn, ids[name], now=started + timedelta(minutes=minutes))
 

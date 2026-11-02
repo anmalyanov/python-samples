@@ -14,15 +14,13 @@ from .routes import bp
 
 def create_app(test_config: dict | None = None) -> Flask:
     """Фабрика приложения. ``test_config`` переопределяет настройки в тестах."""
-    app = Flask(__name__, instance_relative_config=True)
+    app = Flask(__name__)
     app.config.from_mapping(
         # Нужен только для flash-сообщений. Без переменной окружения ключ
         # случайный на каждый запуск: сессии не переживут рестарт, зато
         # его нельзя подделать, зная исходники.
         SECRET_KEY=os.environ.get("TIMETRACKER_SECRET_KEY") or secrets.token_hex(32),
-        DATABASE=os.environ.get(
-            "TIMETRACKER_DB", os.path.join(app.instance_path, "timetracker.sqlite3")
-        ),
+        DATABASE=os.environ.get("TIMETRACKER_DB", db.default_db_path()),
         # часовой пояс для отображения и границ периода в отчёте
         TIMEZONE=os.environ.get("TIMETRACKER_TZ", "UTC"),
     )
