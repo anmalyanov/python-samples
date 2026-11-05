@@ -1,0 +1,5 @@
+Flask>=3.0,<4
+pytest>=8
+hypothesis>=6
+# zoneinfo на Windows требует отдельной базы часовых поясов
+tzdata; sys_platform == "win32"

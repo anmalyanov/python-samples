@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Табель — учёт рабочего времени{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12.5' fill='none' stroke='%231b1915' stroke-width='3'/%3E%3Cpath d='M16 8.5v8h6' fill='none' stroke='%23b3372b' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-tz="{{ config.TIMEZONE }}" data-server-now="{{ now_utc.timestamp()|int }}">
+  <header class="masthead">
+    <a class="brand" href="{{ url_for('tracker.index') }}">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="12.5" fill="none" stroke="currentColor" stroke-width="2.5"/>
+        <path d="M16 8.5v8h6" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Табель</span>
+    </a>
+    <nav class="nav">
+      <a href="{{ url_for('tracker.index') }}"
+         {% if request.endpoint == 'tracker.index' %}aria-current="page"{% endif %}>Сотрудники</a>
+      <a href="{{ url_for('tracker.report') }}"
+         {% if request.endpoint == 'tracker.report' %}aria-current="page"{% endif %}>Отчёт</a>
+    </nav>
+    <div class="clock" title="Текущее время в поясе {{ config.TIMEZONE }}">
+      <time id="live-clock" datetime="{{ now_local.isoformat() }}">{{ now_local.strftime('%H:%M:%S') }}</time>
+      <span class="clock-meta">{{ now_local.date()|weekday_ru }}, {{ now_local.date()|date_ru }} · {{ config.TIMEZONE }}</span>
+    </div>
+  </header>
+
+  <main class="page">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <p class="notice notice-{{ category }}" role="status">{{ message }}</p>
+      {% endfor %}
+    {% endwith %}
+    {% if error %}
+      <p class="notice notice-error" role="alert">{{ error }}</p>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="colophon">
+    Все имена и записи вымышленные. Время хранится в UTC и показывается в поясе {{ config.TIMEZONE }}.
+  </footer>
+
+  <script>
+    // Живые часы в шапке и счётчики идущих таймеров.
+    // Время берём от сервера (data-server-now) и дальше ведём сами: так счётчики
+    // не зависят от того, насколько у пользователя сбиты часы на компьютере.
+    (function () {
+      var body = document.body;
+      var offset = Number(body.dataset.serverNow) * 1000 - Date.now();
+      var clockEl = document.getElementById("live-clock");
+      var formatter = null;
+      try {
+        formatter = new Intl.DateTimeFormat("ru-RU", {
+          timeZone: body.dataset.tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+        });
+      } catch (e) { /* неизвестный браузеру пояс — часы остаются серверными */ }
+
+      function pad(n) { return String(n).padStart(2, "0"); }
+      function hms(total) {
+        return Math.floor(total / 3600) + ":" + pad(Math.floor(total % 3600 / 60)) + ":" + pad(total % 60);
+      }
+      function tick() {
+        var now = Date.now() + offset;
+        if (clockEl && formatter) { clockEl.textContent = formatter.format(new Date(now)); }
+        document.querySelectorAll(".elapsed[data-started-at]").forEach(function (el) {
+          var started = Date.parse(el.dataset.startedAt);
+          if (!isNaN(started)) { el.textContent = hms(Math.max(0, Math.floor((now - started) / 1000))); }
+        });
+      }
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
+</body>
+</html>

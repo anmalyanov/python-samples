@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="sheet">
+  <header class="sheet-head">
+    <h1>Сотрудники</h1>
+    <form method="post" action="{{ url_for('tracker.add_employee') }}" class="row-form">
+      <label for="name" class="visually-hidden">Имя сотрудника</label>
+      <input id="name" name="name" type="text" placeholder="Новый сотрудник"
+             value="{{ form_values.get('name', '') }}"
+             maxlength="100" required autocomplete="off">
+      <button type="submit" class="btn">Добавить</button>
+    </form>
+  </header>
+
+  {% if not statuses %}
+    <div class="empty">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="8" y="14" width="48" height="36" rx="3" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M8 24h48M20 14v-4M44 14v-4" stroke="currentColor" stroke-width="2"/>
+        <path d="M18 34h10M18 42h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+      </svg>
+      <p>Табель пока пуст. Добавьте первого сотрудника — поле справа сверху.</p>
+    </div>
+  {% else %}
+  <div class="table-wrap">
+  <table class="ledger">
+    <thead>
+      <tr>
+        <th class="num">№</th>
+        <th>Сотрудник</th>
+        <th>Задача</th>
+        <th class="time">Время</th>
+        <th class="actions"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for status in statuses %}
+      {% set employee = status.employee %}
+      {% set running = status.running_entry %}
+      <tr class="{{ 'is-running' if running }}">
+        <td class="num mono">{{ '%02d' % loop.index }}</td>
+        <td class="name">{{ employee.name }}</td>
+        {% if running %}
+          <td class="task">
+            <span class="stamp stamp-go">идёт</span>
+            <span class="task-title">{{ running.description }}</span>
+            <span class="task-meta">с {{ running.started_at|local_dt('%H:%M') }}
+              {%- if running.started_at|local_dt('%Y-%m-%d') != now_local.strftime('%Y-%m-%d') %},
+              {{ running.started_at|local_dt('%d.%m') }}{% endif %}</span>
+            {% if running.is_suspiciously_long() %}
+              <span class="warn">идёт дольше 12 часов — забыли остановить?</span>
+            {% endif %}
+          </td>
+          <td class="time">
+            <span class="counter"><i class="pulse" aria-hidden="true"></i><span class="elapsed mono"
+                  data-started-at="{{ running.started_at.isoformat() }}">{{ running.duration_seconds()|duration }}</span></span>
+          </td>
+          <td class="actions">
+            <form method="post" action="{{ url_for('tracker.stop_timer', employee_id=employee.id) }}">
+              <button type="submit" class="btn btn-stop">Стоп</button>
+            </form>
+            <a class="link" href="{{ url_for('tracker.report', employee_id=employee.id) }}">отчёт</a>
+          </td>
+        {% else %}
+          <td class="task" colspan="2">
+            <form method="post" class="row-form"
+                  action="{{ url_for('tracker.start_timer', employee_id=employee.id) }}">
+              <label for="description-{{ employee.id }}" class="visually-hidden">Описание задачи</label>
+              <input id="description-{{ employee.id }}" name="description" type="text"
+                     value="{{ form_values.get('description', '') if form_values.get('employee_id') == employee.id else '' }}"
+                     placeholder="Над чем работаем?" maxlength="200" required autocomplete="off">
+              <button type="submit" class="btn btn-go">Старт</button>
+            </form>
+          </td>
+          <td class="actions">
+            <a class="link" href="{{ url_for('tracker.report', employee_id=employee.id) }}">отчёт</a>
+          </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
